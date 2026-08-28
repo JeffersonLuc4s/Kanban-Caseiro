@@ -888,7 +888,8 @@ function getOriginalTransferName(storageName) {
   const storedName = storageName.slice(separator + 2);
   if (!storedName.startsWith('b64_')) return storedName;
   try {
-    const base64 = storedName.slice(4).replace(/-/g, '+').replace(/_/g, '/');
+    const encodedName = storedName.slice(4).split('.')[0];
+    const base64 = encodedName.replace(/-/g, '+').replace(/_/g, '/');
     const paddedBase64 = base64.padEnd(Math.ceil(base64.length / 4) * 4, '=');
     const bytes = Uint8Array.from(atob(paddedBase64), (character) => character.charCodeAt(0));
     return new TextDecoder().decode(bytes);
@@ -901,7 +902,10 @@ function encodeTransferName(fileName) {
   const bytes = new TextEncoder().encode(fileName);
   let binary = '';
   bytes.forEach((byte) => { binary += String.fromCharCode(byte); });
-  return `b64_${btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')}`;
+  const encodedName = btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  const extensionMatch = fileName.match(/\.([a-z0-9]{1,10})$/i);
+  const safeExtension = extensionMatch ? `.${extensionMatch[1].toLowerCase()}` : '';
+  return `b64_${encodedName}${safeExtension}`;
 }
 
 function formatFileSize(bytes = 0) {
@@ -924,6 +928,22 @@ async function renderTransfers() {
     return;
   }
   transferFiles = (data || []).filter((file) => file.name !== '.emptyFolderPlaceholder');
+  const legacyFiles = transferFiles.filter((file) => {
+    const storedName = file.name.slice(file.name.indexOf('--') + 2);
+    return storedName.startsWith('b64_') && !/\.[a-z0-9]{1,10}$/i.test(storedName);
+  });
+  if (legacyFiles.length) {
+    let movedAnyFile = false;
+    for (const file of legacyFiles) {
+      const originalName = getOriginalTransferName(file.name);
+      const extensionMatch = originalName.match(/\.([a-z0-9]{1,10})$/i);
+      if (!extensionMatch) continue;
+      const newName = `${file.name}.${extensionMatch[1].toLowerCase()}`;
+      const { error: moveError } = await supabaseClient.storage.from(TRANSFER_BUCKET).move(`${currentUser.id}/${file.name}`, `${currentUser.id}/${newName}`);
+      if (!moveError) movedAnyFile = true;
+    }
+    if (movedAnyFile) return renderTransfers();
+  }
   const filesWithUrls = await Promise.all(transferFiles.map(async (file) => {
     const path = `${currentUser.id}/${file.name}`;
     const { data: signedData } = await supabaseClient.storage.from(TRANSFER_BUCKET).createSignedUrl(path, 3600);
