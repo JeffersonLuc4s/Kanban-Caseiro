@@ -4,9 +4,12 @@ const statuses = { backlog: 'CAIXA DE ENTRADA', doing: 'EM PRODUÇÃO', done: 'C
 const priorityLabels = { low: 'tranquilo', medium: 'importante', high: 'urgente' };
 const WORKFLOWS_STORAGE_KEY = 'organiza-workflows';
 const SCRIPTS_STORAGE_KEY = 'organiza-scripts';
+const REFERENCES_STORAGE_KEY = 'organiza-references';
+const SCRIPT_SPEAKING_RATE = 150;
 const HISTORY_STORAGE_KEY = 'organiza-daily-history';
 const SUPABASE_URL = 'https://bflozrxprlgurhhtrtvd.supabase.co';
 const SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_dzLx3RfdGPukXv2cbWVQfQ_gbsNTYdT';
+const TRANSFER_BUCKET = 'device-transfers';
 const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
 let currentUser = null;
 let cloudSaveTimer = null;
@@ -22,11 +25,16 @@ let cards = loadCards();
 let ideas = loadIdeas();
 let workflows = loadWorkflows();
 let scripts = loadScripts();
+let referenceCollections = loadReferenceCollections();
 let historyEntries = loadHistoryEntries();
 let selectedHistoryDate = getTodayDate();
 applyDailyRollover();
 let selectedScriptId = scripts[0]?.id;
 let selectedScriptCategory = scripts[0]?.category || scripts[0]?.name;
+let selectedReferenceCollectionId = referenceCollections[0]?.id;
+let editingReferenceId = null;
+let transferFiles = [];
+let pendingTransferPath = null;
 let namingScriptId = null;
 let namingScriptMode = 'script';
 let selectedWorkflowId = workflows[0]?.id;
@@ -74,6 +82,27 @@ const workflowNameInput = document.querySelector('#workflowNameInput');
 const scriptsNav = document.querySelector('#scriptsNav');
 const planningNav = document.querySelector('#planningNav');
 const planningPage = document.querySelector('#planningPage');
+const referencesNav = document.querySelector('#referencesNav');
+const referencesPage = document.querySelector('#referencesPage');
+const transfersNav = document.querySelector('#transfersNav');
+const transfersPage = document.querySelector('#transfersPage');
+const transferFileInput = document.querySelector('#transferFileInput');
+const transferGrid = document.querySelector('#transferGrid');
+const transferUploadStatus = document.querySelector('#transferUploadStatus');
+const deleteTransferModalBackdrop = document.querySelector('#deleteTransferModalBackdrop');
+const referenceCollectionsElement = document.querySelector('#referenceCollections');
+const referenceGrid = document.querySelector('#referenceGrid');
+const referenceImageInput = document.querySelector('#referenceImageInput');
+const referenceModalBackdrop = document.querySelector('#referenceModalBackdrop');
+const referenceForm = document.querySelector('#referenceForm');
+const referenceTitle = document.querySelector('#referenceTitle');
+const referenceNotes = document.querySelector('#referenceNotes');
+const referenceCollectionModalBackdrop = document.querySelector('#referenceCollectionModalBackdrop');
+const referenceCollectionForm = document.querySelector('#referenceCollectionForm');
+const referenceCollectionName = document.querySelector('#referenceCollectionName');
+const deleteReferenceCollectionModalBackdrop = document.querySelector('#deleteReferenceCollectionModalBackdrop');
+const siteToast = document.querySelector('#siteToast');
+let siteToastTimer = null;
 const planningForm = document.querySelector('#planningForm');
 const planningTitle = document.querySelector('#planningTitle');
 const planningDescription = document.querySelector('#planningDescription');
@@ -162,8 +191,17 @@ function saveHistoryEntries() {
   scheduleCloudSave();
 }
 
+function loadReferenceCollections() {
+  try {
+    const savedCollections = JSON.parse(localStorage.getItem(REFERENCES_STORAGE_KEY));
+    return Array.isArray(savedCollections) ? savedCollections : [];
+  } catch (error) {
+    return [];
+  }
+}
+
 function getWorkspaceData() {
-  return { cards, ideas, workflows, scripts, historyEntries, version: 1 };
+  return { cards, ideas, workflows, scripts, referenceCollections, historyEntries, version: 2 };
 }
 
 function saveWorkspaceLocally() {
@@ -171,6 +209,7 @@ function saveWorkspaceLocally() {
   localStorage.setItem(IDEAS_STORAGE_KEY, JSON.stringify(ideas));
   localStorage.setItem(WORKFLOWS_STORAGE_KEY, JSON.stringify(workflows));
   localStorage.setItem(SCRIPTS_STORAGE_KEY, JSON.stringify(scripts));
+  localStorage.setItem(REFERENCES_STORAGE_KEY, JSON.stringify(referenceCollections));
   localStorage.setItem(HISTORY_STORAGE_KEY, JSON.stringify(historyEntries));
 }
 
@@ -179,6 +218,7 @@ function renderWorkspace() {
   renderIdeas();
   renderWorkflows();
   renderScripts();
+  renderReferences();
   renderHistory();
   renderPlanning();
 }
@@ -210,10 +250,12 @@ async function loadCloudWorkspace() {
     ideas = Array.isArray(data.data.ideas) ? data.data.ideas : [];
     workflows = Array.isArray(data.data.workflows) && data.data.workflows.length ? data.data.workflows : workflows;
     scripts = Array.isArray(data.data.scripts) && data.data.scripts.length ? data.data.scripts : scripts;
+    referenceCollections = Array.isArray(data.data.referenceCollections) ? data.data.referenceCollections : referenceCollections;
     historyEntries = Array.isArray(data.data.historyEntries) ? data.data.historyEntries : [];
     selectedWorkflowId = workflows[0]?.id;
     selectedScriptId = scripts[0]?.id;
     selectedScriptCategory = scripts[0]?.category || scripts[0]?.name;
+    selectedReferenceCollectionId = referenceCollections[0]?.id;
     saveWorkspaceLocally();
   }
   applyDailyRollover();
@@ -325,6 +367,7 @@ function renderScripts() {
     scriptCategoryCount.textContent = '0 roteiros';
     scriptTitle.value = '';
     scriptBody.innerHTML = '';
+    updateScriptWordCount();
     deleteScriptButton.hidden = true;
     return;
   }
@@ -371,7 +414,13 @@ function persistCurrentScript() {
 
 function updateScriptWordCount() {
   const text = scriptBody.textContent.trim();
-  document.querySelector('#scriptWordCount').textContent = text ? text.split(/\s+/).length : 0;
+  const wordCount = text ? text.split(/\s+/).length : 0;
+  const estimatedSeconds = Math.round((wordCount / SCRIPT_SPEAKING_RATE) * 60);
+  const minutes = Math.floor(estimatedSeconds / 60);
+  const seconds = estimatedSeconds % 60;
+  const formattedDuration = minutes ? `${minutes}min ${String(seconds).padStart(2, '0')}s` : `${seconds}s`;
+  document.querySelector('#scriptWordCount').textContent = wordCount;
+  document.querySelector('#scriptDuration').textContent = formattedDuration;
 }
 
 function createScript() {
@@ -640,30 +689,374 @@ function updateIdeaStatus(ideaId, status) {
   renderIdeas();
 }
 
+function getSelectedReferenceCollection() {
+  return referenceCollections.find((collection) => collection.id === selectedReferenceCollectionId);
+}
+
+function saveReferences() {
+  localStorage.setItem(REFERENCES_STORAGE_KEY, JSON.stringify(referenceCollections));
+  scheduleCloudSave();
+}
+
+function renderReferences() {
+  let collection = getSelectedReferenceCollection();
+  if (!collection && referenceCollections.length) {
+    selectedReferenceCollectionId = referenceCollections[0].id;
+    collection = referenceCollections[0];
+  }
+  referenceCollectionsElement.innerHTML = referenceCollections.map((item) => `<button class="reference-collection-tab ${item.id === selectedReferenceCollectionId ? 'active' : ''}" type="button" data-reference-collection="${item.id}">${escapeHtml(item.name)} <span>${item.items?.length || 0}</span></button>`).join('');
+  referenceCollectionsElement.querySelectorAll('[data-reference-collection]').forEach((button) => button.addEventListener('click', () => {
+    selectedReferenceCollectionId = button.dataset.referenceCollection;
+    renderReferences();
+  }));
+  document.querySelector('#deleteReferenceCollectionButton').hidden = !collection;
+  referenceImageInput.disabled = !collection;
+  document.querySelector('.reference-upload-button').classList.toggle('disabled', !collection);
+  document.querySelector('#referenceCollectionTitle').textContent = collection?.name || 'Nenhuma coleção';
+  const items = collection?.items || [];
+  document.querySelector('#referenceCount').textContent = `${items.length} ${items.length === 1 ? 'referência' : 'referências'}`;
+  referenceGrid.innerHTML = items.map((item) => `<article class="reference-card" data-reference-id="${item.id}" tabindex="0"><div class="reference-card-image"><img src="${item.image}" alt="${escapeHtml(item.title)}" loading="lazy"><div class="reference-card-actions"><button type="button" data-copy-reference="${item.id}" aria-label="Copiar ${escapeHtml(item.title)}" title="Copiar imagem">▣</button><button type="button" data-delete-reference="${item.id}" aria-label="Excluir ${escapeHtml(item.title)}" title="Excluir referência">×</button></div></div><div class="reference-card-content"><strong>${escapeHtml(item.title)}</strong>${item.notes ? `<p>${escapeHtml(item.notes)}</p>` : '<p class="reference-no-notes">Adicionar observações</p>'}</div></article>`).join('');
+  referenceGrid.querySelectorAll('[data-reference-id]').forEach((card) => {
+    card.addEventListener('click', (event) => { if (!event.target.closest('.reference-card-actions')) openReferenceEditor(card.dataset.referenceId); });
+    card.addEventListener('keydown', (event) => { if (event.key === 'Enter' && event.target === card) openReferenceEditor(card.dataset.referenceId); });
+  });
+  referenceGrid.querySelectorAll('[data-delete-reference]').forEach((button) => button.addEventListener('click', () => removeReference(button.dataset.deleteReference)));
+  referenceGrid.querySelectorAll('[data-copy-reference]').forEach((button) => button.addEventListener('click', () => copyReferenceImage(button.dataset.copyReference)));
+  document.querySelector('#referenceEmpty').hidden = Boolean(collection && items.length);
+  const empty = document.querySelector('#referenceEmpty');
+  empty.querySelector('strong').textContent = collection ? 'Esta coleção ainda está vazia.' : 'Crie sua primeira coleção visual.';
+  empty.querySelector('p').textContent = collection ? 'Adicione uma ou várias imagens para criar seus cards de referência.' : 'Depois, envie várias imagens para transformá-las em cards de referência.';
+}
+
+function createReferenceCollection() {
+  referenceCollectionForm.reset();
+  referenceCollectionModalBackdrop.hidden = false;
+  requestAnimationFrame(() => referenceCollectionName.focus());
+}
+
+function closeReferenceCollectionModal() {
+  referenceCollectionModalBackdrop.hidden = true;
+  referenceCollectionForm.reset();
+}
+
+function saveNewReferenceCollection(name) {
+  const collection = { id: crypto.randomUUID(), name, items: [], createdAt: Date.now() };
+  referenceCollections.push(collection);
+  selectedReferenceCollectionId = collection.id;
+  saveReferences();
+  renderReferences();
+  closeReferenceCollectionModal();
+}
+
+function deleteReferenceCollection() {
+  const collection = getSelectedReferenceCollection();
+  if (!collection) return;
+  document.querySelector('#deleteReferenceCollectionName').textContent = `“${collection.name}”`;
+  deleteReferenceCollectionModalBackdrop.hidden = false;
+}
+
+function closeDeleteReferenceCollectionModal() {
+  deleteReferenceCollectionModalBackdrop.hidden = true;
+}
+
+function confirmDeleteReferenceCollection() {
+  const collection = getSelectedReferenceCollection();
+  if (!collection) return closeDeleteReferenceCollectionModal();
+  referenceCollections = referenceCollections.filter((item) => item.id !== collection.id);
+  selectedReferenceCollectionId = referenceCollections[0]?.id;
+  saveReferences();
+  renderReferences();
+  closeDeleteReferenceCollectionModal();
+  showSiteToast('Coleção excluída.');
+}
+
+function resizeReferenceImage(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.addEventListener('error', reject);
+    reader.addEventListener('load', () => {
+      const image = new Image();
+      image.addEventListener('error', reject);
+      image.addEventListener('load', () => {
+        const maximumSize = 1000;
+        const scale = Math.min(1, maximumSize / Math.max(image.naturalWidth, image.naturalHeight));
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
+        canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
+        canvas.getContext('2d').drawImage(image, 0, 0, canvas.width, canvas.height);
+        resolve(canvas.toDataURL('image/jpeg', .72));
+      });
+      image.src = reader.result;
+    });
+    reader.readAsDataURL(file);
+  });
+}
+
+async function addReferenceImages(files) {
+  const collection = getSelectedReferenceCollection();
+  if (!collection || !files.length) return;
+  const images = await Promise.all([...files].filter((file) => file.type.startsWith('image/')).map(async (file, index) => ({
+    id: crypto.randomUUID(),
+    title: file.name?.replace(/\.[^.]+$/, '') || `Imagem colada ${index + 1}`,
+    notes: '',
+    image: await resizeReferenceImage(file),
+    createdAt: Date.now()
+  })));
+  collection.items = [...(collection.items || []), ...images];
+  try {
+    saveReferences();
+    renderReferences();
+    showSiteToast(`${images.length} ${images.length === 1 ? 'imagem adicionada' : 'imagens adicionadas'}.`);
+  } catch (error) {
+    collection.items.splice(-images.length, images.length);
+    window.alert('Não foi possível salvar todas as imagens. Tente enviar menos arquivos por vez.');
+  }
+}
+
+function showSiteToast(message) {
+  clearTimeout(siteToastTimer);
+  siteToast.textContent = message;
+  siteToast.hidden = false;
+  requestAnimationFrame(() => siteToast.classList.add('visible'));
+  siteToastTimer = setTimeout(() => {
+    siteToast.classList.remove('visible');
+    setTimeout(() => { siteToast.hidden = true; }, 180);
+  }, 2600);
+}
+
+function convertImageToPngBlob(source) {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.addEventListener('error', reject);
+    image.addEventListener('load', () => {
+      const canvas = document.createElement('canvas');
+      canvas.width = image.naturalWidth;
+      canvas.height = image.naturalHeight;
+      canvas.getContext('2d').drawImage(image, 0, 0);
+      canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error('Falha ao preparar imagem')), 'image/png');
+    });
+    image.src = source;
+  });
+}
+
+async function copyReferenceImage(referenceId) {
+  const reference = getSelectedReferenceCollection()?.items?.find((item) => item.id === referenceId);
+  if (!reference) return;
+  if (!navigator.clipboard?.write || typeof ClipboardItem === 'undefined') {
+    showSiteToast('Seu navegador não permite copiar imagens diretamente.');
+    return;
+  }
+  try {
+    const blob = await convertImageToPngBlob(reference.image);
+    await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+    showSiteToast('Imagem copiada. Agora você pode colar onde quiser.');
+  } catch (error) {
+    showSiteToast('Não foi possível copiar a imagem. Permita o acesso à área de transferência.');
+  }
+}
+
+function openReferenceEditor(referenceId) {
+  const reference = getSelectedReferenceCollection()?.items?.find((item) => item.id === referenceId);
+  if (!reference) return;
+  editingReferenceId = reference.id;
+  referenceTitle.value = reference.title;
+  referenceNotes.value = reference.notes || '';
+  document.querySelector('#referenceModalPreview').src = reference.image;
+  referenceModalBackdrop.hidden = false;
+  requestAnimationFrame(() => referenceTitle.focus());
+}
+
+function closeReferenceEditor() {
+  editingReferenceId = null;
+  referenceForm.reset();
+  referenceModalBackdrop.hidden = true;
+}
+
+function removeReference(referenceId) {
+  const collection = getSelectedReferenceCollection();
+  const reference = collection?.items?.find((item) => item.id === referenceId);
+  if (!reference || !window.confirm(`Excluir a referência "${reference.title}"?`)) return;
+  collection.items = collection.items.filter((item) => item.id !== referenceId);
+  saveReferences();
+  renderReferences();
+  if (!referenceModalBackdrop.hidden) closeReferenceEditor();
+}
+
+function getOriginalTransferName(storageName) {
+  const separator = storageName.indexOf('--');
+  if (separator < 0) return storageName;
+  const storedName = storageName.slice(separator + 2);
+  if (!storedName.startsWith('b64_')) return storedName;
+  try {
+    const base64 = storedName.slice(4).replace(/-/g, '+').replace(/_/g, '/');
+    const paddedBase64 = base64.padEnd(Math.ceil(base64.length / 4) * 4, '=');
+    const bytes = Uint8Array.from(atob(paddedBase64), (character) => character.charCodeAt(0));
+    return new TextDecoder().decode(bytes);
+  } catch (error) {
+    return 'arquivo';
+  }
+}
+
+function encodeTransferName(fileName) {
+  const bytes = new TextEncoder().encode(fileName);
+  let binary = '';
+  bytes.forEach((byte) => { binary += String.fromCharCode(byte); });
+  return `b64_${btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')}`;
+}
+
+function formatFileSize(bytes = 0) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 ** 2) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 ** 3) return `${(bytes / 1024 ** 2).toFixed(1)} MB`;
+  return `${(bytes / 1024 ** 3).toFixed(2)} GB`;
+}
+
+async function renderTransfers() {
+  if (!currentUser) return;
+  const refreshButton = document.querySelector('#refreshTransfersButton');
+  refreshButton.disabled = true;
+  const { data, error } = await supabaseClient.storage.from(TRANSFER_BUCKET).list(currentUser.id, { limit: 100, sortBy: { column: 'created_at', order: 'desc' } });
+  refreshButton.disabled = false;
+  if (error) {
+    transferGrid.innerHTML = '';
+    document.querySelector('#transferEmpty').hidden = false;
+    showSiteToast('Não foi possível carregar os arquivos. Verifique se o Storage foi configurado.');
+    return;
+  }
+  transferFiles = (data || []).filter((file) => file.name !== '.emptyFolderPlaceholder');
+  const filesWithUrls = await Promise.all(transferFiles.map(async (file) => {
+    const path = `${currentUser.id}/${file.name}`;
+    const { data: signedData } = await supabaseClient.storage.from(TRANSFER_BUCKET).createSignedUrl(path, 3600);
+    return { ...file, path, signedUrl: signedData?.signedUrl || '' };
+  }));
+  document.querySelector('#transferFileCount').textContent = `${filesWithUrls.length} ${filesWithUrls.length === 1 ? 'arquivo' : 'arquivos'}`;
+  document.querySelector('#transferEmpty').hidden = filesWithUrls.length > 0;
+  transferGrid.innerHTML = filesWithUrls.map((file) => {
+    const name = getOriginalTransferName(file.name);
+    const mimeType = file.metadata?.mimetype || file.metadata?.contentType || '';
+    const preview = mimeType.startsWith('video/')
+      ? `<video src="${file.signedUrl}" controls preload="metadata"></video>`
+      : `<img src="${file.signedUrl}" alt="${escapeHtml(name)}" loading="lazy">`;
+    return `<article class="transfer-card"><div class="transfer-preview">${preview}<span>${mimeType.startsWith('video/') ? 'VÍDEO' : 'IMAGEM'}</span></div><div class="transfer-card-info"><strong title="${escapeHtml(name)}">${escapeHtml(name)}</strong><small>${formatFileSize(file.metadata?.size)}</small><div><button class="secondary-button" type="button" data-download-transfer="${file.path}" data-download-name="${escapeHtml(name)}">↓ Baixar original</button><button class="transfer-delete" type="button" data-delete-transfer="${file.path}" data-delete-name="${escapeHtml(name)}" aria-label="Excluir arquivo" title="Excluir arquivo">×</button></div></div></article>`;
+  }).join('');
+  transferGrid.querySelectorAll('[data-download-transfer]').forEach((button) => button.addEventListener('click', () => downloadTransferFile(button.dataset.downloadTransfer, button.dataset.downloadName)));
+  transferGrid.querySelectorAll('[data-delete-transfer]').forEach((button) => button.addEventListener('click', () => openDeleteTransferModal(button.dataset.deleteTransfer, button.dataset.deleteName)));
+}
+
+function uploadOriginalTransferFile(file, accessToken) {
+  return new Promise((resolve, reject) => {
+    const encodedName = encodeTransferName(file.name);
+    const objectName = `${currentUser.id}/${Date.now()}-${crypto.randomUUID()}--${encodedName}`;
+    const upload = new tus.Upload(file, {
+      endpoint: `${SUPABASE_URL}/storage/v1/upload/resumable`,
+      retryDelays: [0, 1000, 3000, 5000, 10000],
+      headers: { authorization: `Bearer ${accessToken}`, apikey: SUPABASE_PUBLISHABLE_KEY },
+      uploadDataDuringCreation: true,
+      removeFingerprintOnSuccess: true,
+      chunkSize: 6 * 1024 * 1024,
+      metadata: { bucketName: TRANSFER_BUCKET, objectName, contentType: file.type || 'application/octet-stream', cacheControl: '3600' },
+      onError: reject,
+      onProgress: (uploaded, total) => {
+        const percentage = total ? Math.round((uploaded / total) * 100) : 0;
+        document.querySelector('#transferUploadName').textContent = `Enviando ${file.name}`;
+        document.querySelector('#transferUploadPercent').textContent = `${percentage}%`;
+        document.querySelector('#transferProgressBar').style.width = `${percentage}%`;
+      },
+      onSuccess: resolve
+    });
+    upload.findPreviousUploads().then((previousUploads) => {
+      if (previousUploads.length) upload.resumeFromPreviousUpload(previousUploads[0]);
+      upload.start();
+    }).catch(reject);
+  });
+}
+
+async function uploadTransferFiles(files) {
+  const acceptedFiles = [...files].filter((file) => file.type.startsWith('image/') || file.type.startsWith('video/'));
+  if (!acceptedFiles.length || !currentUser) return;
+  const { data: { session } } = await supabaseClient.auth.getSession();
+  if (!session?.access_token) return showSiteToast('Sua sessão expirou. Entre novamente para enviar arquivos.');
+  transferUploadStatus.hidden = false;
+  document.querySelector('.transfer-upload-button').classList.add('disabled');
+  try {
+    for (const file of acceptedFiles) await uploadOriginalTransferFile(file, session.access_token);
+    showSiteToast(`${acceptedFiles.length} ${acceptedFiles.length === 1 ? 'arquivo enviado' : 'arquivos enviados'} sem alteração de qualidade.`);
+    await renderTransfers();
+  } catch (error) {
+    showSiteToast(`Falha no envio: ${error.message || 'tente novamente'}.`);
+  } finally {
+    transferUploadStatus.hidden = true;
+    document.querySelector('.transfer-upload-button').classList.remove('disabled');
+    document.querySelector('#transferProgressBar').style.width = '0%';
+  }
+}
+
+async function downloadTransferFile(path, originalName) {
+  const { data, error } = await supabaseClient.storage.from(TRANSFER_BUCKET).createSignedUrl(path, 60, { download: originalName });
+  if (error || !data?.signedUrl) return showSiteToast('Não foi possível preparar o download.');
+  const link = document.createElement('a');
+  link.href = data.signedUrl;
+  link.download = originalName;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+}
+
+function openDeleteTransferModal(path, name) {
+  pendingTransferPath = path;
+  document.querySelector('#deleteTransferName').textContent = `“${name}”`;
+  deleteTransferModalBackdrop.hidden = false;
+}
+
+function closeDeleteTransferModal() {
+  pendingTransferPath = null;
+  deleteTransferModalBackdrop.hidden = true;
+}
+
+async function confirmDeleteTransfer() {
+  if (!pendingTransferPath) return;
+  const path = pendingTransferPath;
+  const { error } = await supabaseClient.storage.from(TRANSFER_BUCKET).remove([path]);
+  if (error) return showSiteToast('Não foi possível excluir o arquivo.');
+  closeDeleteTransferModal();
+  showSiteToast('Arquivo excluído.');
+  await renderTransfers();
+}
+
 function showPage(page) {
   const showingIdeas = page === 'ideas';
   const showingWorkflow = page === 'workflow';
   const showingScripts = page === 'scripts';
   const showingPlanning = page === 'planning';
-  kanbanPage.hidden = showingIdeas || showingWorkflow || showingScripts || showingPlanning;
+  const showingReferences = page === 'references';
+  const showingTransfers = page === 'transfers';
+  kanbanPage.hidden = showingIdeas || showingWorkflow || showingScripts || showingPlanning || showingReferences || showingTransfers;
   ideasPage.hidden = !showingIdeas;
   workflowPage.hidden = !showingWorkflow;
   scriptsPage.hidden = !showingScripts;
   planningPage.hidden = !showingPlanning;
-  kanbanNav.classList.toggle('active', !showingIdeas && !showingWorkflow && !showingScripts && !showingPlanning);
+  referencesPage.hidden = !showingReferences;
+  transfersPage.hidden = !showingTransfers;
+  kanbanNav.classList.toggle('active', !showingIdeas && !showingWorkflow && !showingScripts && !showingPlanning && !showingReferences && !showingTransfers);
   ideasNav.classList.toggle('active', showingIdeas);
   workflowNav.classList.toggle('active', showingWorkflow);
   scriptsNav.classList.toggle('active', showingScripts);
   planningNav.classList.toggle('active', showingPlanning);
-  kanbanNav.toggleAttribute('aria-current', !showingIdeas && !showingWorkflow && !showingScripts && !showingPlanning);
+  referencesNav.classList.toggle('active', showingReferences);
+  transfersNav.classList.toggle('active', showingTransfers);
+  kanbanNav.toggleAttribute('aria-current', !showingIdeas && !showingWorkflow && !showingScripts && !showingPlanning && !showingReferences && !showingTransfers);
   ideasNav.toggleAttribute('aria-current', showingIdeas);
   workflowNav.toggleAttribute('aria-current', showingWorkflow);
   scriptsNav.toggleAttribute('aria-current', showingScripts);
   planningNav.toggleAttribute('aria-current', showingPlanning);
+  referencesNav.toggleAttribute('aria-current', showingReferences);
+  transfersNav.toggleAttribute('aria-current', showingTransfers);
   if (showingIdeas) renderIdeas();
   if (showingWorkflow) renderWorkflows();
   if (showingScripts) renderScripts();
   if (showingPlanning) renderPlanning();
+  if (showingReferences) renderReferences();
+  if (showingTransfers) renderTransfers();
 }
 
 function formatDate(timestamp) {
@@ -814,6 +1207,8 @@ kanbanNav.addEventListener('click', () => showPage('kanban'));
 ideasNav.addEventListener('click', () => showPage('ideas'));
 workflowNav.addEventListener('click', () => showPage('workflow'));
 scriptsNav.addEventListener('click', () => showPage('scripts'));
+referencesNav.addEventListener('click', () => showPage('references'));
+transfersNav.addEventListener('click', () => showPage('transfers'));
 planningNav.addEventListener('click', () => showPage('planning'));
 planningForm.addEventListener('submit', (event) => {
   event.preventDefault();
@@ -927,6 +1322,71 @@ document.querySelector('#scriptNameModalClose').addEventListener('click', closeS
 document.querySelector('#cancelScriptName').addEventListener('click', closeScriptNameEditor);
 scriptNameModalBackdrop.addEventListener('click', (event) => { if (event.target === scriptNameModalBackdrop) closeScriptNameEditor(); });
 document.addEventListener('keydown', (event) => { if (event.key === 'Escape' && !scriptNameModalBackdrop.hidden) closeScriptNameEditor(); });
+document.querySelector('#newReferenceCollectionButton').addEventListener('click', createReferenceCollection);
+document.querySelector('#deleteReferenceCollectionButton').addEventListener('click', deleteReferenceCollection);
+document.querySelector('#confirmDeleteReferenceCollection').addEventListener('click', confirmDeleteReferenceCollection);
+document.querySelector('#deleteReferenceCollectionModalClose').addEventListener('click', closeDeleteReferenceCollectionModal);
+document.querySelector('#cancelDeleteReferenceCollection').addEventListener('click', closeDeleteReferenceCollectionModal);
+deleteReferenceCollectionModalBackdrop.addEventListener('click', (event) => { if (event.target === deleteReferenceCollectionModalBackdrop) closeDeleteReferenceCollectionModal(); });
+referenceCollectionForm.addEventListener('submit', (event) => {
+  event.preventDefault();
+  const name = referenceCollectionName.value.trim();
+  if (name) saveNewReferenceCollection(name);
+});
+document.querySelector('#referenceCollectionModalClose').addEventListener('click', closeReferenceCollectionModal);
+document.querySelector('#cancelReferenceCollection').addEventListener('click', closeReferenceCollectionModal);
+referenceCollectionModalBackdrop.addEventListener('click', (event) => { if (event.target === referenceCollectionModalBackdrop) closeReferenceCollectionModal(); });
+referenceImageInput.addEventListener('change', async (event) => {
+  try {
+    await addReferenceImages(event.target.files);
+  } catch (error) {
+    window.alert('Não foi possível processar uma das imagens. Verifique o arquivo e tente novamente.');
+  }
+  event.target.value = '';
+});
+referenceForm.addEventListener('submit', (event) => {
+  event.preventDefault();
+  const reference = getSelectedReferenceCollection()?.items?.find((item) => item.id === editingReferenceId);
+  if (!reference) return;
+  reference.title = referenceTitle.value.trim();
+  reference.notes = referenceNotes.value.trim();
+  reference.updatedAt = Date.now();
+  saveReferences();
+  renderReferences();
+  closeReferenceEditor();
+});
+document.querySelector('#deleteReferenceButton').addEventListener('click', () => removeReference(editingReferenceId));
+document.querySelector('#referenceModalClose').addEventListener('click', closeReferenceEditor);
+document.querySelector('#cancelReferenceEdit').addEventListener('click', closeReferenceEditor);
+referenceModalBackdrop.addEventListener('click', (event) => { if (event.target === referenceModalBackdrop) closeReferenceEditor(); });
+document.addEventListener('keydown', (event) => { if (event.key === 'Escape' && !referenceModalBackdrop.hidden) closeReferenceEditor(); });
+document.addEventListener('keydown', (event) => { if (event.key === 'Escape' && !referenceCollectionModalBackdrop.hidden) closeReferenceCollectionModal(); });
+document.addEventListener('keydown', (event) => { if (event.key === 'Escape' && !deleteReferenceCollectionModalBackdrop.hidden) closeDeleteReferenceCollectionModal(); });
+document.addEventListener('paste', async (event) => {
+  if (referencesPage.hidden || !referenceModalBackdrop.hidden || !referenceCollectionModalBackdrop.hidden || !deleteReferenceCollectionModalBackdrop.hidden) return;
+  const imageFiles = [...(event.clipboardData?.items || [])].filter((item) => item.type.startsWith('image/')).map((item) => item.getAsFile()).filter(Boolean);
+  if (!imageFiles.length) return;
+  event.preventDefault();
+  if (!getSelectedReferenceCollection()) {
+    showSiteToast('Crie uma coleção antes de colar imagens.');
+    return;
+  }
+  try {
+    await addReferenceImages(imageFiles);
+  } catch (error) {
+    showSiteToast('Não foi possível adicionar a imagem colada.');
+  }
+});
+transferFileInput.addEventListener('change', async (event) => {
+  await uploadTransferFiles(event.target.files);
+  event.target.value = '';
+});
+document.querySelector('#refreshTransfersButton').addEventListener('click', renderTransfers);
+document.querySelector('#confirmDeleteTransfer').addEventListener('click', confirmDeleteTransfer);
+document.querySelector('#deleteTransferModalClose').addEventListener('click', closeDeleteTransferModal);
+document.querySelector('#cancelDeleteTransfer').addEventListener('click', closeDeleteTransferModal);
+deleteTransferModalBackdrop.addEventListener('click', (event) => { if (event.target === deleteTransferModalBackdrop) closeDeleteTransferModal(); });
+document.addEventListener('keydown', (event) => { if (event.key === 'Escape' && !deleteTransferModalBackdrop.hidden) closeDeleteTransferModal(); });
 scriptTitle.addEventListener('input', persistCurrentScript);
 scriptBody.addEventListener('input', () => { updateScriptWordCount(); persistCurrentScript(); });
 document.querySelectorAll('.script-format').forEach((button) => {
@@ -1105,7 +1565,7 @@ document.querySelector('#signupButton').addEventListener('click', async () => {
 document.querySelector('#logoutButton').addEventListener('click', async () => {
   await persistCloudData();
   await supabaseClient.auth.signOut();
-  [STORAGE_KEY, IDEAS_STORAGE_KEY, WORKFLOWS_STORAGE_KEY, SCRIPTS_STORAGE_KEY, HISTORY_STORAGE_KEY].forEach((key) => localStorage.removeItem(key));
+  [STORAGE_KEY, IDEAS_STORAGE_KEY, WORKFLOWS_STORAGE_KEY, SCRIPTS_STORAGE_KEY, REFERENCES_STORAGE_KEY, HISTORY_STORAGE_KEY].forEach((key) => localStorage.removeItem(key));
   window.location.reload();
 });
 
@@ -1124,6 +1584,7 @@ renderIdeas();
 renderWorkflows();
 optimizeStoredWorkflowImages();
 renderScripts();
+renderReferences();
 renderHistory();
 renderPlanning();
 initializeAuth();
