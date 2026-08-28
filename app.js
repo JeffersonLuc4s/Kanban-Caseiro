@@ -4,6 +4,7 @@ const statuses = { backlog: 'CAIXA DE ENTRADA', doing: 'EM PRODUÇÃO', done: 'C
 const priorityLabels = { low: 'tranquilo', medium: 'importante', high: 'urgente' };
 const WORKFLOWS_STORAGE_KEY = 'organiza-workflows';
 const SCRIPTS_STORAGE_KEY = 'organiza-scripts';
+const HISTORY_STORAGE_KEY = 'organiza-daily-history';
 const seedCards = [
   { id: 'seed-1', title: 'Definir prioridades da semana', description: 'Escolher as três coisas que realmente merecem minha atenção nos próximos dias.', priority: 'high', status: 'doing', createdAt: Date.now() - 86400000 },
   { id: 'seed-2', title: 'Organizar referências do projeto', description: 'Juntar links, anotações e inspirações em um só lugar.', priority: 'medium', status: 'backlog', createdAt: Date.now() - 172800000 },
@@ -15,8 +16,13 @@ let cards = loadCards();
 let ideas = loadIdeas();
 let workflows = loadWorkflows();
 let scripts = loadScripts();
+let historyEntries = loadHistoryEntries();
+let selectedHistoryDate = getTodayDate();
+applyDailyRollover();
 let selectedScriptId = scripts[0]?.id;
+let selectedScriptCategory = scripts[0]?.category || scripts[0]?.name;
 let namingScriptId = null;
+let namingScriptMode = 'script';
 let selectedWorkflowId = workflows[0]?.id;
 let editingWorkflowCardId = null;
 let connectMode = false;
@@ -60,13 +66,29 @@ const workflowNameModalBackdrop = document.querySelector('#workflowNameModalBack
 const workflowNameForm = document.querySelector('#workflowNameForm');
 const workflowNameInput = document.querySelector('#workflowNameInput');
 const scriptsNav = document.querySelector('#scriptsNav');
+const planningNav = document.querySelector('#planningNav');
+const planningPage = document.querySelector('#planningPage');
+const planningForm = document.querySelector('#planningForm');
+const planningTitle = document.querySelector('#planningTitle');
+const planningDescription = document.querySelector('#planningDescription');
+const planningPriority = document.querySelector('#planningPriority');
+const plannedList = document.querySelector('#plannedList');
 const scriptTabs = document.querySelector('#scriptTabs');
+const scriptList = document.querySelector('#scriptList');
+const scriptCategoryName = document.querySelector('#scriptCategoryName');
+const scriptCategoryCount = document.querySelector('#scriptCategoryCount');
+const deleteScriptButton = document.querySelector('#deleteScriptButton');
 const scriptTitle = document.querySelector('#scriptTitle');
 const scriptBody = document.querySelector('#scriptBody');
 const scriptSaved = document.querySelector('#scriptSaved');
 const scriptNameModalBackdrop = document.querySelector('#scriptNameModalBackdrop');
 const scriptNameForm = document.querySelector('#scriptNameForm');
 const scriptNameInput = document.querySelector('#scriptNameInput');
+const historyDate = document.querySelector('#historyDate');
+const dailyEntryForm = document.querySelector('#dailyEntryForm');
+const dailyEntryText = document.querySelector('#dailyEntryText');
+const entryDateLabel = document.querySelector('#entryDateLabel');
+const entrySavedStatus = document.querySelector('#entrySavedStatus');
 
 function loadCards() {
   try {
@@ -99,14 +121,107 @@ function loadWorkflows() {
 function loadScripts() {
   try {
     const savedScripts = JSON.parse(localStorage.getItem(SCRIPTS_STORAGE_KEY));
-    if (Array.isArray(savedScripts) && savedScripts.length) return savedScripts;
+    if (Array.isArray(savedScripts) && savedScripts.length) return savedScripts.map((script) => ({ ...script, category: script.category || script.name, name: script.category ? (script.name || script.title || 'Novo roteiro') : (script.title || script.name || 'Novo roteiro') }));
   } catch (error) {
     // Fall through to starter scripts.
   }
   return [
-    { id: crypto.randomUUID(), name: 'Vídeos do YouTube (longo)', title: 'Roteiro: vídeo longo', body: '<p><strong>Abertura</strong></p><p>Apresente o tema e a promessa do vídeo.</p><ul><li>Gancho nos primeiros segundos</li><li>Contexto rápido para quem chegou agora</li></ul><p><strong>Desenvolvimento</strong></p><ol><li>Explique o primeiro ponto</li><li>Mostre um exemplo prático</li></ol>', updatedAt: Date.now() },
-    { id: crypto.randomUUID(), name: 'TikTok / Reels', title: 'Roteiro: vídeo curto', body: '<p>Gancho direto e visual.</p><ul><li>Problema</li><li>Solução</li><li>Chamada para ação</li></ul>', updatedAt: Date.now() }
+    { id: crypto.randomUUID(), name: 'Roteiro: vídeo longo', category: 'Vídeos do YouTube (longo)', title: 'Roteiro: vídeo longo', body: '<p><strong>Abertura</strong></p><p>Apresente o tema e a promessa do vídeo.</p><ul><li>Gancho nos primeiros segundos</li><li>Contexto rápido para quem chegou agora</li></ul><p><strong>Desenvolvimento</strong></p><ol><li>Explique o primeiro ponto</li><li>Mostre um exemplo prático</li></ol>', updatedAt: Date.now() },
+    { id: crypto.randomUUID(), name: 'Roteiro: vídeo curto', category: 'TikTok / Reels', title: 'Roteiro: vídeo curto', body: '<p>Gancho direto e visual.</p><ul><li>Problema</li><li>Solução</li><li>Chamada para ação</li></ul>', updatedAt: Date.now() }
   ];
+}
+
+function getTodayDate() {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+}
+
+function getTomorrowDate() {
+  const tomorrow = new Date();
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  return `${tomorrow.getFullYear()}-${String(tomorrow.getMonth() + 1).padStart(2, '0')}-${String(tomorrow.getDate()).padStart(2, '0')}`;
+}
+
+function loadHistoryEntries() {
+  try {
+    const savedEntries = JSON.parse(localStorage.getItem(HISTORY_STORAGE_KEY));
+    return Array.isArray(savedEntries) ? savedEntries : [];
+  } catch (error) {
+    return [];
+  }
+}
+
+function saveHistoryEntries() {
+  localStorage.setItem(HISTORY_STORAGE_KEY, JSON.stringify(historyEntries));
+}
+
+function applyDailyRollover() {
+  const today = getTodayDate();
+  let cardsChanged = false;
+  let historyChanged = false;
+  cards = cards.flatMap((card) => {
+    if (!card.activeDate) {
+      card.activeDate = today;
+      cardsChanged = true;
+    }
+    if (card.status === 'done' && card.activeDate < today) {
+      const completedDate = card.completedAt || card.activeDate;
+      const existingEntry = historyEntries.find((entry) => entry.date === completedDate);
+      const completedCard = { id: card.id, title: card.title, description: card.description || '', priority: card.priority, completedAt: completedDate };
+      if (existingEntry) {
+        existingEntry.completedCards ||= [];
+        if (!existingEntry.completedCards.some((item) => item.id === card.id)) existingEntry.completedCards.push(completedCard);
+      } else {
+        historyEntries.push({ date: completedDate, text: '', completedCards: [completedCard], updatedAt: completedDate });
+      }
+      historyChanged = true;
+      cardsChanged = true;
+      return [];
+    }
+    if (card.status === 'backlog' && card.activeDate < today) {
+      card.carriedFrom = card.activeDate;
+      card.activeDate = today;
+      cardsChanged = true;
+    }
+    return [card];
+  });
+  if (historyChanged) saveHistoryEntries();
+  if (cardsChanged) saveCards();
+}
+
+function updateCardStatus(card, status) {
+  card.status = status;
+  card.activeDate = getTodayDate();
+  if (status === 'done') card.completedAt = getTodayDate();
+  else delete card.completedAt;
+  if (status !== 'backlog') delete card.carriedFrom;
+  return card;
+}
+
+function formatHistoryDate(dateValue, options = { day: 'numeric', month: 'long', year: 'numeric' }) {
+  return new Intl.DateTimeFormat('pt-BR', options).format(new Date(`${dateValue}T12:00:00`));
+}
+
+function renderHistory() {
+  const entry = historyEntries.find((item) => item.date === selectedHistoryDate);
+  historyDate.value = selectedHistoryDate;
+  entryDateLabel.textContent = formatHistoryDate(selectedHistoryDate, { weekday: 'long', day: 'numeric', month: 'long' });
+  dailyEntryText.value = entry?.text || '';
+  const completedCards = entry?.completedCards || [];
+  document.querySelector('#historyCompletedCards').innerHTML = completedCards.length
+    ? `<div class="history-completed-heading"><strong>Concluídas neste dia</strong><span>${completedCards.length}</span></div>${completedCards.map((card) => `<article class="history-completed-card priority-${card.priority}"><span class="card-tag">${priorityLabels[card.priority] || 'tarefa'}</span><strong>${escapeHtml(card.title)}</strong>${card.description ? `<p>${escapeHtml(card.description)}</p>` : ''}</article>`).join('')}`
+    : '';
+  entrySavedStatus.textContent = entry ? `Salvo em ${formatHistoryDate(entry.updatedAt || entry.date, { day: 'numeric', month: 'short' })}` : 'Ainda não salvo';
+  const sortedEntries = [...historyEntries].sort((a, b) => b.date.localeCompare(a.date));
+  const grouped = sortedEntries.reduce((groups, item) => {
+    const month = formatHistoryDate(item.date, { month: 'long', year: 'numeric' });
+    (groups[month] ||= []).push(item);
+    return groups;
+  }, {});
+  document.querySelector('#historyList').innerHTML = Object.entries(grouped).map(([month, entries]) => `<section class="history-month"><h3>${month}</h3>${entries.map((item) => `<button class="history-item ${item.date === selectedHistoryDate ? 'active' : ''}" type="button" data-history-date="${item.date}"><time>${formatHistoryDate(item.date, { day: '2-digit', month: 'short' })}</time><span>${escapeHtml(item.text?.slice(0, 100) || `${item.completedCards?.length || 0} concluída(s)`)}</span></button>`).join('')}</section>`).join('');
+  document.querySelectorAll('[data-history-date]').forEach((item) => item.addEventListener('click', () => { selectedHistoryDate = item.dataset.historyDate; renderHistory(); }));
+  document.querySelector('#historyCount').textContent = `${historyEntries.length} ${historyEntries.length === 1 ? 'registro' : 'registros'}`;
+  document.querySelector('#historyEmpty').hidden = historyEntries.length > 0;
 }
 
 function saveCards() {
@@ -132,23 +247,55 @@ function getSelectedScript() {
 
 function renderScripts() {
   const script = getSelectedScript();
-  if (!script) return;
+  if (!script) {
+    scriptTabs.innerHTML = '';
+    scriptList.innerHTML = '';
+    scriptCategoryName.textContent = 'Nenhum roteiro';
+    scriptCategoryCount.textContent = '0 roteiros';
+    scriptTitle.value = '';
+    scriptBody.innerHTML = '';
+    deleteScriptButton.hidden = true;
+    return;
+  }
   selectedScriptId = script.id;
-  scriptTabs.innerHTML = scripts.map((item) => `<button class="script-tab ${item.id === script.id ? 'active' : ''}" type="button" data-script-id="${item.id}">${escapeHtml(item.name)}</button>`).join('');
-  scriptTabs.querySelectorAll('[data-script-id]').forEach((tab) => tab.addEventListener('click', () => { selectedScriptId = tab.dataset.scriptId; renderScripts(); }));
+  selectedScriptCategory = script.category || script.name;
+  const categories = [...new Set(scripts.map((item) => item.category || item.name))];
+  scriptTabs.innerHTML = categories.map((category) => `<button class="script-tab ${category === selectedScriptCategory ? 'active' : ''}" type="button" data-script-category="${escapeHtml(category)}">${escapeHtml(category)}</button>`).join('');
+  scriptTabs.querySelectorAll('[data-script-category]').forEach((tab) => tab.addEventListener('click', () => { selectedScriptCategory = tab.dataset.scriptCategory; selectedScriptId = scripts.find((item) => (item.category || item.name) === selectedScriptCategory)?.id; renderScripts(); }));
+  const categoryScripts = scripts.filter((item) => (item.category || item.name) === selectedScriptCategory);
+  scriptList.innerHTML = categoryScripts.map((item) => `<button class="script-list-item ${item.id === script.id ? 'active' : ''}" type="button" data-script-id="${item.id}"><span class="script-list-marker">≡</span><span><strong>${escapeHtml(item.name)}</strong><small>${item.title ? escapeHtml(item.title) : 'Sem título'}</small></span></button>`).join('');
+  scriptList.querySelectorAll('[data-script-id]').forEach((item) => item.addEventListener('click', () => { selectedScriptId = item.dataset.scriptId; renderScripts(); }));
+  scriptCategoryName.textContent = selectedScriptCategory;
+  scriptCategoryCount.textContent = `${categoryScripts.length} ${categoryScripts.length === 1 ? 'roteiro' : 'roteiros'}`;
   scriptTitle.value = script.title || '';
   scriptBody.innerHTML = script.body || '<p><br></p>';
+  deleteScriptButton.hidden = false;
   updateScriptWordCount();
+}
+
+function deleteCurrentScript() {
+  const script = getSelectedScript();
+  if (!script || !window.confirm(`Excluir o roteiro "${script.name}"?`)) return;
+  const category = script.category || script.name;
+  scripts = scripts.filter((item) => item.id !== script.id);
+  const nextScript = scripts.find((item) => (item.category || item.name) === category) || scripts[0];
+  selectedScriptId = nextScript?.id;
+  selectedScriptCategory = nextScript?.category || nextScript?.name || category;
+  saveScripts();
+  renderScripts();
 }
 
 function persistCurrentScript() {
   const script = getSelectedScript();
   if (!script) return;
   script.title = scriptTitle.value.trim();
+  script.name = script.title || 'Novo roteiro';
   script.body = scriptBody.innerHTML;
   script.updatedAt = Date.now();
   saveScripts();
   scriptSaved.textContent = 'salvo agora';
+  const currentScriptLabel = scriptList.querySelector(`[data-script-id="${script.id}"] strong`);
+  if (currentScriptLabel) currentScriptLabel.textContent = script.name;
 }
 
 function updateScriptWordCount() {
@@ -157,7 +304,8 @@ function updateScriptWordCount() {
 }
 
 function createScript() {
-  const script = { id: crypto.randomUUID(), name: 'Novo roteiro', title: 'Novo roteiro', body: '<p><br></p>', updatedAt: Date.now() };
+  const category = selectedScriptCategory || 'Nova categoria';
+  const script = { id: crypto.randomUUID(), name: 'Novo roteiro', category, title: 'Novo roteiro', body: '<p><br></p>', updatedAt: Date.now() };
   scripts.push(script);
   selectedScriptId = script.id;
   saveScripts();
@@ -167,17 +315,30 @@ function createScript() {
 }
 
 function renameScript() {
-  const script = getSelectedScript();
-  namingScriptId = script.id;
-  document.querySelector('#scriptNameModalTitle').textContent = 'Renomear aba';
-  scriptNameInput.value = script.name;
+  namingScriptMode = 'category';
+  namingScriptId = selectedScriptCategory;
+  document.querySelector('#scriptNameModalKicker').textContent = 'CATEGORIA DE ROTEIROS';
+  document.querySelector('#scriptNameModalTitle').textContent = 'Renomear categoria';
+  scriptNameInput.value = selectedScriptCategory;
   scriptNameModalBackdrop.hidden = false;
   requestAnimationFrame(() => scriptNameInput.focus());
 }
 
 function openNewScriptNameEditor() {
+  namingScriptMode = 'script';
   namingScriptId = null;
-  document.querySelector('#scriptNameModalTitle').textContent = 'Nova aba de roteiro';
+  document.querySelector('#scriptNameModalKicker').textContent = 'ROTEIRO';
+  document.querySelector('#scriptNameModalTitle').textContent = 'Novo roteiro';
+  scriptNameInput.value = '';
+  scriptNameModalBackdrop.hidden = false;
+  requestAnimationFrame(() => scriptNameInput.focus());
+}
+
+function openNewCategoryNameEditor() {
+  namingScriptMode = 'category';
+  namingScriptId = null;
+  document.querySelector('#scriptNameModalKicker').textContent = 'CATEGORIA DE ROTEIROS';
+  document.querySelector('#scriptNameModalTitle').textContent = 'Nova categoria';
   scriptNameInput.value = '';
   scriptNameModalBackdrop.hidden = false;
   requestAnimationFrame(() => scriptNameInput.focus());
@@ -412,32 +573,47 @@ function showPage(page) {
   const showingIdeas = page === 'ideas';
   const showingWorkflow = page === 'workflow';
   const showingScripts = page === 'scripts';
-  kanbanPage.hidden = showingIdeas || showingWorkflow || showingScripts;
+  const showingPlanning = page === 'planning';
+  kanbanPage.hidden = showingIdeas || showingWorkflow || showingScripts || showingPlanning;
   ideasPage.hidden = !showingIdeas;
   workflowPage.hidden = !showingWorkflow;
   scriptsPage.hidden = !showingScripts;
-  kanbanNav.classList.toggle('active', !showingIdeas && !showingWorkflow && !showingScripts);
+  planningPage.hidden = !showingPlanning;
+  kanbanNav.classList.toggle('active', !showingIdeas && !showingWorkflow && !showingScripts && !showingPlanning);
   ideasNav.classList.toggle('active', showingIdeas);
   workflowNav.classList.toggle('active', showingWorkflow);
   scriptsNav.classList.toggle('active', showingScripts);
-  kanbanNav.toggleAttribute('aria-current', !showingIdeas && !showingWorkflow && !showingScripts);
+  planningNav.classList.toggle('active', showingPlanning);
+  kanbanNav.toggleAttribute('aria-current', !showingIdeas && !showingWorkflow && !showingScripts && !showingPlanning);
   ideasNav.toggleAttribute('aria-current', showingIdeas);
   workflowNav.toggleAttribute('aria-current', showingWorkflow);
   scriptsNav.toggleAttribute('aria-current', showingScripts);
+  planningNav.toggleAttribute('aria-current', showingPlanning);
   if (showingIdeas) renderIdeas();
   if (showingWorkflow) renderWorkflows();
   if (showingScripts) renderScripts();
+  if (showingPlanning) renderPlanning();
 }
 
 function formatDate(timestamp) {
   return new Intl.DateTimeFormat('pt-BR', { day: '2-digit', month: 'short' }).format(timestamp).replace('.', '');
 }
 
+function renderPlanning() {
+  const tomorrow = getTomorrowDate();
+  document.querySelector('#tomorrowLabel').textContent = formatHistoryDate(tomorrow, { weekday: 'short', day: 'numeric', month: 'short' });
+  const plannedCards = cards.filter((card) => card.activeDate === tomorrow && card.status === 'backlog');
+  plannedList.innerHTML = plannedCards.map((card) => `<article class="planned-item"><span class="planning-check">＋</span><div><strong>${escapeHtml(card.title)}</strong>${card.description ? `<p>${escapeHtml(card.description)}</p>` : ''}<small>${priorityLabels[card.priority]}</small></div><button type="button" class="planned-remove" data-planned-id="${card.id}" aria-label="Remover tarefa programada" title="Remover tarefa programada">×</button></article>`).join('');
+  plannedList.querySelectorAll('[data-planned-id]').forEach((button) => button.addEventListener('click', () => { cards = cards.filter((card) => card.id !== button.dataset.plannedId); saveCards(); renderPlanning(); }));
+  document.querySelector('#plannedCount').textContent = `${plannedCards.length} ${plannedCards.length === 1 ? 'tarefa' : 'tarefas'}`;
+  document.querySelector('#plannedEmpty').hidden = plannedCards.length > 0;
+}
+
 function render() {
   document.querySelectorAll('.cards-list').forEach((list) => { list.innerHTML = ''; });
   document.querySelectorAll('.column').forEach((column) => {
     const status = column.dataset.status;
-    const statusCards = cards.filter((card) => card.status === status);
+    const statusCards = cards.filter((card) => card.status === status && (!card.activeDate || card.activeDate <= getTodayDate()));
     const list = column.querySelector('.cards-list');
     column.querySelector('.column-count').textContent = statusCards.length;
     statusCards.forEach((card) => list.appendChild(createCardElement(card)));
@@ -454,7 +630,7 @@ function createCardElement(card) {
   element.setAttribute('role', 'button');
   element.setAttribute('aria-label', `Abrir card ${card.title}`);
   element.innerHTML = `
-    <div class="card-topline"><span class="card-tag">${priorityLabels[card.priority]}</span><time class="card-date">${formatDate(card.createdAt)}</time></div>
+    <div class="card-topline"><span class="card-tag ${card.status === 'backlog' && card.carriedFrom ? 'yesterday-tag' : ''}">${card.status === 'backlog' && card.carriedFrom ? 'ontem' : priorityLabels[card.priority]}</span><time class="card-date">${formatDate(card.createdAt)}</time></div>
     <h3>${escapeHtml(card.title)}</h3>
     ${card.description ? `<p class="card-preview">${escapeHtml(card.description)}</p>` : ''}
     <div class="card-footer"><span>${card.description ? 'Detalhes disponíveis' : 'Sem detalhes ainda'}</span><span class="card-detail-icon">↗</span></div>
@@ -491,7 +667,7 @@ function moveCard(cardId, status, pointerY, dropzone) {
   if (!movingCard) return;
 
   cards = cards.filter((card) => card.id !== cardId);
-  movingCard.status = status;
+  updateCardStatus(movingCard, status);
 
   const targetCard = [...dropzone.querySelectorAll('.task-card:not(.dragging)')].find((cardElement) => {
     const bounds = cardElement.getBoundingClientRect();
@@ -545,9 +721,9 @@ cardForm.addEventListener('submit', (event) => {
   const values = { title: formData.get('title').trim(), description: formData.get('description').trim(), priority: formData.get('priority'), status: formData.get('status') };
   if (!values.title) return;
   if (editingId) {
-    cards = cards.map((card) => card.id === editingId ? { ...card, ...values } : card);
+    cards = cards.map((card) => card.id === editingId ? updateCardStatus({ ...card, ...values }, values.status) : card);
   } else {
-    cards.unshift({ id: crypto.randomUUID(), ...values, createdAt: Date.now() });
+    cards.unshift({ id: crypto.randomUUID(), ...values, createdAt: Date.now(), activeDate: getTodayDate(), ...(values.status === 'done' ? { completedAt: getTodayDate() } : {}) });
   }
   saveCards();
   render();
@@ -567,6 +743,36 @@ kanbanNav.addEventListener('click', () => showPage('kanban'));
 ideasNav.addEventListener('click', () => showPage('ideas'));
 workflowNav.addEventListener('click', () => showPage('workflow'));
 scriptsNav.addEventListener('click', () => showPage('scripts'));
+planningNav.addEventListener('click', () => showPage('planning'));
+planningForm.addEventListener('submit', (event) => {
+  event.preventDefault();
+  const title = planningTitle.value.trim();
+  if (!title) return;
+  cards.push({ id: crypto.randomUUID(), title, description: planningDescription.value.trim(), priority: planningPriority.value, status: 'backlog', activeDate: getTomorrowDate(), createdAt: Date.now() });
+  saveCards();
+  planningForm.reset();
+  renderPlanning();
+  planningTitle.focus();
+});
+historyDate.addEventListener('change', () => { selectedHistoryDate = historyDate.value || getTodayDate(); renderHistory(); });
+dailyEntryForm.addEventListener('submit', (event) => {
+  event.preventDefault();
+  const text = dailyEntryText.value.trim();
+  const existingEntry = historyEntries.find((entry) => entry.date === selectedHistoryDate);
+  if (!text) {
+    if (existingEntry?.completedCards?.length) {
+      existingEntry.text = '';
+      existingEntry.updatedAt = selectedHistoryDate;
+    } else historyEntries = historyEntries.filter((entry) => entry.date !== selectedHistoryDate);
+  } else if (existingEntry) {
+    existingEntry.text = text;
+    existingEntry.updatedAt = selectedHistoryDate;
+  } else {
+    historyEntries.push({ date: selectedHistoryDate, text, updatedAt: selectedHistoryDate });
+  }
+  saveHistoryEntries();
+  renderHistory();
+});
 document.querySelector('#ideaForm').addEventListener('submit', (event) => {
   event.preventDefault();
   const formData = new FormData(event.currentTarget);
@@ -621,14 +827,24 @@ workflowNameModalBackdrop.addEventListener('click', (event) => { if (event.targe
 document.addEventListener('keydown', (event) => { if (event.key === 'Escape' && !workflowNameModalBackdrop.hidden) closeWorkflowNameEditor(); });
 
 document.querySelector('#newScriptButton').addEventListener('click', openNewScriptNameEditor);
+document.querySelector('#newScriptInCategoryButton').addEventListener('click', openNewScriptNameEditor);
+document.querySelector('#newScriptCategoryButton').addEventListener('click', openNewCategoryNameEditor);
 document.querySelector('#renameScriptButton').addEventListener('click', renameScript);
+deleteScriptButton.addEventListener('click', deleteCurrentScript);
 scriptNameForm.addEventListener('submit', (event) => {
   event.preventDefault();
   const name = scriptNameInput.value.trim();
   if (!name) return;
-  if (namingScriptId) getSelectedScript().name = name;
-  else {
-    const script = { id: crypto.randomUUID(), name, title: name, body: '<p><br></p>', updatedAt: Date.now() };
+  if (namingScriptMode === 'category' && namingScriptId) {
+    scripts.forEach((script) => { if ((script.category || script.name) === namingScriptId) script.category = name; });
+    selectedScriptCategory = name;
+  } else if (namingScriptMode === 'category') {
+    const script = { id: crypto.randomUUID(), name: 'Novo roteiro', category: name, title: 'Novo roteiro', body: '<p><br></p>', updatedAt: Date.now() };
+    scripts.push(script);
+    selectedScriptCategory = name;
+    selectedScriptId = script.id;
+  } else {
+    const script = { id: crypto.randomUUID(), name, category: selectedScriptCategory || 'Roteiros', title: name, body: '<p><br></p>', updatedAt: Date.now() };
     scripts.push(script);
     selectedScriptId = script.id;
   }
@@ -775,3 +991,5 @@ renderIdeas();
 renderWorkflows();
 optimizeStoredWorkflowImages();
 renderScripts();
+renderHistory();
+renderPlanning();
