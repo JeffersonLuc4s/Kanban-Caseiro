@@ -5,6 +5,12 @@ const priorityLabels = { low: 'tranquilo', medium: 'importante', high: 'urgente'
 const WORKFLOWS_STORAGE_KEY = 'organiza-workflows';
 const SCRIPTS_STORAGE_KEY = 'organiza-scripts';
 const HISTORY_STORAGE_KEY = 'organiza-daily-history';
+const SUPABASE_URL = 'https://bflozrxprlgurhhtrtvd.supabase.co';
+const SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_dzLx3RfdGPukXv2cbWVQfQ_gbsNTYdT';
+const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
+let currentUser = null;
+let cloudSaveTimer = null;
+let loadingCloudData = false;
 const seedCards = [
   { id: 'seed-1', title: 'Definir prioridades da semana', description: 'Escolher as três coisas que realmente merecem minha atenção nos próximos dias.', priority: 'high', status: 'doing', createdAt: Date.now() - 86400000 },
   { id: 'seed-2', title: 'Organizar referências do projeto', description: 'Juntar links, anotações e inspirações em um só lugar.', priority: 'medium', status: 'backlog', createdAt: Date.now() - 172800000 },
@@ -153,6 +159,67 @@ function loadHistoryEntries() {
 
 function saveHistoryEntries() {
   localStorage.setItem(HISTORY_STORAGE_KEY, JSON.stringify(historyEntries));
+  scheduleCloudSave();
+}
+
+function getWorkspaceData() {
+  return { cards, ideas, workflows, scripts, historyEntries, version: 1 };
+}
+
+function saveWorkspaceLocally() {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(cards));
+  localStorage.setItem(IDEAS_STORAGE_KEY, JSON.stringify(ideas));
+  localStorage.setItem(WORKFLOWS_STORAGE_KEY, JSON.stringify(workflows));
+  localStorage.setItem(SCRIPTS_STORAGE_KEY, JSON.stringify(scripts));
+  localStorage.setItem(HISTORY_STORAGE_KEY, JSON.stringify(historyEntries));
+}
+
+function renderWorkspace() {
+  render();
+  renderIdeas();
+  renderWorkflows();
+  renderScripts();
+  renderHistory();
+  renderPlanning();
+}
+
+async function persistCloudData() {
+  if (!currentUser || loadingCloudData) return;
+  const { error } = await supabaseClient.from('user_workspaces').upsert({ user_id: currentUser.id, data: getWorkspaceData(), updated_at: new Date().toISOString() });
+  if (error) {
+    document.querySelectorAll('.saved-status').forEach((item) => { item.textContent = 'erro ao sincronizar'; });
+    console.error('Falha ao sincronizar workspace:', error.message);
+  }
+}
+
+function scheduleCloudSave() {
+  if (!currentUser || loadingCloudData) return;
+  clearTimeout(cloudSaveTimer);
+  cloudSaveTimer = setTimeout(persistCloudData, 500);
+}
+
+async function loadCloudWorkspace() {
+  loadingCloudData = true;
+  const { data, error } = await supabaseClient.from('user_workspaces').select('data').eq('user_id', currentUser.id).maybeSingle();
+  if (error) {
+    loadingCloudData = false;
+    throw error;
+  }
+  if (data?.data) {
+    cards = Array.isArray(data.data.cards) ? data.data.cards : [];
+    ideas = Array.isArray(data.data.ideas) ? data.data.ideas : [];
+    workflows = Array.isArray(data.data.workflows) && data.data.workflows.length ? data.data.workflows : workflows;
+    scripts = Array.isArray(data.data.scripts) && data.data.scripts.length ? data.data.scripts : scripts;
+    historyEntries = Array.isArray(data.data.historyEntries) ? data.data.historyEntries : [];
+    selectedWorkflowId = workflows[0]?.id;
+    selectedScriptId = scripts[0]?.id;
+    selectedScriptCategory = scripts[0]?.category || scripts[0]?.name;
+    saveWorkspaceLocally();
+  }
+  applyDailyRollover();
+  loadingCloudData = false;
+  renderWorkspace();
+  if (!data) await persistCloudData();
 }
 
 function applyDailyRollover() {
@@ -227,18 +294,22 @@ function renderHistory() {
 function saveCards() {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(cards));
   document.querySelector('.saved-status').innerHTML = '<span class="status-dot"></span>salvo agora';
+  scheduleCloudSave();
 }
 
 function saveIdeas() {
   localStorage.setItem(IDEAS_STORAGE_KEY, JSON.stringify(ideas));
+  scheduleCloudSave();
 }
 
 function saveWorkflows() {
   localStorage.setItem(WORKFLOWS_STORAGE_KEY, JSON.stringify(workflows));
+  scheduleCloudSave();
 }
 
 function saveScripts() {
   localStorage.setItem(SCRIPTS_STORAGE_KEY, JSON.stringify(scripts));
+  scheduleCloudSave();
 }
 
 function getSelectedScript() {
@@ -986,6 +1057,68 @@ document.querySelectorAll('[data-dropzone]').forEach((zone) => {
   });
 });
 
+const authScreen = document.querySelector('#authScreen');
+const authForm = document.querySelector('#authForm');
+const authMessage = document.querySelector('#authMessage');
+const authEmail = document.querySelector('#authEmail');
+const authPassword = document.querySelector('#authPassword');
+
+function showAuthMessage(message, success = false) {
+  authMessage.textContent = message;
+  authMessage.classList.toggle('success', success);
+}
+
+async function openUserWorkspace(user) {
+  currentUser = user;
+  document.querySelector('#profileEmail').textContent = user.email;
+  document.querySelector('#profileName').textContent = user.user_metadata?.name || user.email.split('@')[0];
+  document.querySelector('#profileAvatar').textContent = (user.email[0] || 'U').toUpperCase();
+  try {
+    await loadCloudWorkspace();
+    authScreen.hidden = true;
+  } catch (error) {
+    showAuthMessage(`Não foi possível carregar seus dados: ${error.message}`);
+  }
+}
+
+authForm.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  showAuthMessage('Entrando...', true);
+  const { data, error } = await supabaseClient.auth.signInWithPassword({ email: authEmail.value.trim(), password: authPassword.value });
+  if (error) return showAuthMessage(error.message === 'Invalid login credentials' ? 'E-mail ou senha incorretos.' : error.message);
+  await openUserWorkspace(data.user);
+});
+
+document.querySelector('#signupButton').addEventListener('click', async () => {
+  if (!authEmail.reportValidity() || !authPassword.reportValidity()) return;
+  showAuthMessage('Criando sua conta...', true);
+  const { data, error } = await supabaseClient.auth.signUp({
+    email: authEmail.value.trim(),
+    password: authPassword.value,
+    options: { emailRedirectTo: window.location.origin }
+  });
+  if (error) return showAuthMessage(error.message);
+  if (data.session) await openUserWorkspace(data.user);
+  else showAuthMessage('Conta criada. Confirme o link enviado ao seu e-mail e depois entre.', true);
+});
+
+document.querySelector('#logoutButton').addEventListener('click', async () => {
+  await persistCloudData();
+  await supabaseClient.auth.signOut();
+  [STORAGE_KEY, IDEAS_STORAGE_KEY, WORKFLOWS_STORAGE_KEY, SCRIPTS_STORAGE_KEY, HISTORY_STORAGE_KEY].forEach((key) => localStorage.removeItem(key));
+  window.location.reload();
+});
+
+supabaseClient.auth.onAuthStateChange((event) => {
+  if (event === 'SIGNED_OUT') authScreen.hidden = false;
+});
+
+async function initializeAuth() {
+  const { data: { session } } = await supabaseClient.auth.getSession();
+  if (session?.user) await openUserWorkspace(session.user);
+  else authScreen.hidden = false;
+}
+
 render();
 renderIdeas();
 renderWorkflows();
@@ -993,3 +1126,4 @@ optimizeStoredWorkflowImages();
 renderScripts();
 renderHistory();
 renderPlanning();
+initializeAuth();

@@ -9,6 +9,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="styles.css">
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 </head>
 <body>
   <div class="app-shell">
@@ -36,7 +37,7 @@
           <strong>Um passo de cada vez.</strong>
           <p>Seu trabalho fica mais leve quando sai da cabeça e ganha um lugar.</p>
         </div>
-        <div class="profile-row"><span class="avatar">J</span><span><strong>Jefferson</strong><small>Meu workspace</small></span><button class="more-button" type="button" aria-label="Mais opções">•••</button></div>
+        <div class="profile-row"><span class="avatar" id="profileAvatar">J</span><span><strong id="profileName">Jefferson</strong><small id="profileEmail">Meu workspace</small></span><button class="more-button" id="logoutButton" type="button" aria-label="Sair" title="Sair">↪</button></div>
       </div>
     </aside>
 
@@ -141,6 +142,23 @@
       <section class="planning-header"><div><div class="eyebrow"><span class="eyebrow-line planning-line"></span>PREPARAR O PRÓXIMO PASSO</div><h1>Planejar <span class="title-accent">＋</span></h1><p class="subtitle">Monte sua rotina de amanhã para começar o dia sabendo por onde ir.</p></div><div class="tomorrow-badge"><span>AMANHÃ</span><strong id="tomorrowLabel">--</strong></div></section>
       <section class="planning-layout"><form class="planning-composer" id="planningForm"><div class="composer-symbol planning-symbol">＋</div><div class="composer-fields"><input id="planningTitle" name="title" type="text" maxlength="80" placeholder="O que você quer fazer amanhã?" required><textarea id="planningDescription" name="description" rows="2" placeholder="Adicione detalhes ou o resultado esperado (opcional)"></textarea><div class="planning-form-row"><label>Prioridade<select id="planningPriority" name="priority"><option value="low">Tranquilo</option><option value="medium" selected>Importante</option><option value="high">Urgente</option></select></label><button class="primary-button" type="submit"><span>＋</span> Programar tarefa</button></div></div></form><section class="planned-list-panel"><div class="planned-heading"><div><strong>Rotina programada</strong><span id="plannedCount">0 tarefas</span></div><span>Vai aparecer na Caixa de entrada</span></div><div id="plannedList"></div><div class="planned-empty" id="plannedEmpty"><span>◷</span><strong>Seu amanhã começa aqui.</strong><p>Adicione a primeira tarefa que você quer encontrar ao abrir o fluxo.</p></div></section></section>
     </main>
+  </div>
+
+  <div class="auth-screen" id="authScreen">
+    <section class="auth-card" aria-labelledby="authTitle">
+      <div class="brand-lockup auth-brand"><div class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></div><div><strong>organiza.</strong><small>seu espaço pessoal</small></div></div>
+      <div class="eyebrow"><span class="eyebrow-line history-line"></span>SEU WORKSPACE</div>
+      <h1 id="authTitle">Entre no seu fluxo</h1>
+      <p>Seus cards, ideias, roteiros e memórias ficam seguros e sincronizados.</p>
+      <form id="authForm">
+        <label for="authEmail">E-mail</label>
+        <input id="authEmail" name="email" type="email" autocomplete="email" placeholder="voce@email.com" required>
+        <label for="authPassword">Senha</label>
+        <input id="authPassword" name="password" type="password" autocomplete="current-password" minlength="6" placeholder="Mínimo de 6 caracteres" required>
+        <div class="auth-actions"><button class="primary-button" type="submit">Entrar</button><button class="secondary-button" id="signupButton" type="button">Criar minha conta</button></div>
+        <p class="auth-message" id="authMessage" role="status"></p>
+      </form>
+    </section>
   </div>
 
   <div class="modal-backdrop" id="workflowModalBackdrop" hidden><section class="card-modal" role="dialog" aria-modal="true" aria-labelledby="workflowModalTitle"><button class="modal-close" id="workflowModalClose" type="button" aria-label="Fechar">×</button><div class="modal-kicker workflow-modal-kicker"><span class="modal-marker"></span>CARD DO WORKFLOW</div><h2 id="workflowModalTitle">Novo card</h2><form id="workflowCardForm"><label for="workflowCardTitle">Título <span>*</span></label><input id="workflowCardTitle" name="title" type="text" maxlength="80" placeholder="Ex: Pesquisar referências" required><label>Detalhes <small>opcional</small></label><div class="rich-editor-tools"><span>Texto e imagens</span><label class="file-image-button" for="workflowImageInput" title="Adicionar imagem do computador">＋ imagem</label><input id="workflowImageInput" type="file" accept="image/*" hidden></div><div id="workflowCardDescription" class="rich-editor" contenteditable="true" role="textbox" aria-multiline="true" data-placeholder="Descreva este passo do processo ou cole uma imagem..."></div><div class="modal-actions"><button class="text-button" id="deleteWorkflowCard" type="button" hidden>Excluir card</button><button class="secondary-button" id="cancelWorkflowCard" type="button">Cancelar</button><button class="primary-button" type="submit">Salvar card</button></div></form></section></div>
