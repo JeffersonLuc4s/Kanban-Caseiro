@@ -10,6 +10,8 @@ const HISTORY_STORAGE_KEY = 'organiza-daily-history';
 const SUPABASE_URL = 'https://bflozrxprlgurhhtrtvd.supabase.co';
 const SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_dzLx3RfdGPukXv2cbWVQfQ_gbsNTYdT';
 const TRANSFER_BUCKET = 'device-transfers';
+const SUPABASE_PROJECT_ID = new URL(SUPABASE_URL).hostname.split('.')[0];
+const TRANSFER_RESUMABLE_ENDPOINT = `https://${SUPABASE_PROJECT_ID}.storage.supabase.co/storage/v1/upload/resumable`;
 const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
 let currentUser = null;
 let cloudSaveTimer = null;
@@ -915,6 +917,21 @@ function formatFileSize(bytes = 0) {
   return `${(bytes / 1024 ** 3).toFixed(2)} GB`;
 }
 
+function getTransferMimeType(file) {
+  if (file.type) return file.type;
+  const extension = file.name.split('.').pop()?.toLowerCase();
+  const mimeTypes = {
+    mp4: 'video/mp4', mov: 'video/quicktime', m4v: 'video/x-m4v', webm: 'video/webm',
+    jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp', heic: 'image/heic', heif: 'image/heif'
+  };
+  return mimeTypes[extension] || 'application/octet-stream';
+}
+
+function isTransferMediaFile(file) {
+  const mimeType = getTransferMimeType(file);
+  return mimeType.startsWith('image/') || mimeType.startsWith('video/');
+}
+
 async function renderTransfers() {
   if (!currentUser) return;
   const refreshButton = document.querySelector('#refreshTransfersButton');
@@ -957,9 +974,10 @@ async function renderTransfers() {
     const preview = mimeType.startsWith('video/')
       ? `<video src="${file.signedUrl}" controls preload="metadata"></video>`
       : `<img src="${file.signedUrl}" alt="${escapeHtml(name)}" loading="lazy">`;
-    return `<article class="transfer-card"><div class="transfer-preview">${preview}<span>${mimeType.startsWith('video/') ? 'VÍDEO' : 'IMAGEM'}</span></div><div class="transfer-card-info"><strong title="${escapeHtml(name)}">${escapeHtml(name)}</strong><small>${formatFileSize(file.metadata?.size)}</small><div><button class="secondary-button" type="button" data-download-transfer="${file.path}" data-download-name="${escapeHtml(name)}">↓ Baixar original</button><button class="transfer-delete" type="button" data-delete-transfer="${file.path}" data-delete-name="${escapeHtml(name)}" aria-label="Excluir arquivo" title="Excluir arquivo">×</button></div></div></article>`;
+    return `<article class="transfer-card"><div class="transfer-preview">${preview}<span>${mimeType.startsWith('video/') ? 'VÍDEO' : 'IMAGEM'}</span></div><div class="transfer-card-info"><strong title="${escapeHtml(name)}">${escapeHtml(name)}</strong><small>${formatFileSize(file.metadata?.size)}</small><div class="transfer-main-actions"><button class="secondary-button" type="button" data-download-transfer="${file.path}" data-download-name="${escapeHtml(name)}">↓ Baixar</button><button class="secondary-button transfer-share-button" type="button" data-share-transfer="${file.path}" data-share-name="${escapeHtml(name)}" data-share-type="${escapeHtml(mimeType)}">↗ Salvar/compartilhar</button><button class="transfer-delete" type="button" data-delete-transfer="${file.path}" data-delete-name="${escapeHtml(name)}" aria-label="Excluir arquivo" title="Excluir arquivo">×</button></div></div></article>`;
   }).join('');
   transferGrid.querySelectorAll('[data-download-transfer]').forEach((button) => button.addEventListener('click', () => downloadTransferFile(button.dataset.downloadTransfer, button.dataset.downloadName)));
+  transferGrid.querySelectorAll('[data-share-transfer]').forEach((button) => button.addEventListener('click', () => shareTransferFile(button.dataset.shareTransfer, button.dataset.shareName, button.dataset.shareType)));
   transferGrid.querySelectorAll('[data-delete-transfer]').forEach((button) => button.addEventListener('click', () => openDeleteTransferModal(button.dataset.deleteTransfer, button.dataset.deleteName)));
 }
 
@@ -967,14 +985,27 @@ function uploadOriginalTransferFile(file, accessToken) {
   return new Promise((resolve, reject) => {
     const encodedName = encodeTransferName(file.name);
     const objectName = `${currentUser.id}/${Date.now()}-${crypto.randomUUID()}--${encodedName}`;
+    const contentType = getTransferMimeType(file);
+    if (file.size <= 6 * 1024 * 1024) {
+      document.querySelector('#transferUploadName').textContent = `Enviando ${file.name}`;
+      supabaseClient.storage.from(TRANSFER_BUCKET).upload(objectName, file, { cacheControl: '3600', contentType, upsert: false }).then(({ error }) => {
+        if (error) reject(error);
+        else {
+          document.querySelector('#transferUploadPercent').textContent = '100%';
+          document.querySelector('#transferProgressBar').style.width = '100%';
+          resolve(objectName);
+        }
+      });
+      return;
+    }
     const upload = new tus.Upload(file, {
-      endpoint: `${SUPABASE_URL}/storage/v1/upload/resumable`,
-      retryDelays: [0, 1000, 3000, 5000, 10000],
-      headers: { authorization: `Bearer ${accessToken}`, apikey: SUPABASE_PUBLISHABLE_KEY },
+      endpoint: TRANSFER_RESUMABLE_ENDPOINT,
+      retryDelays: [0, 3000, 5000, 10000, 20000],
+      headers: { authorization: `Bearer ${accessToken}` },
       uploadDataDuringCreation: true,
       removeFingerprintOnSuccess: true,
       chunkSize: 6 * 1024 * 1024,
-      metadata: { bucketName: TRANSFER_BUCKET, objectName, contentType: file.type || 'application/octet-stream', cacheControl: '3600' },
+      metadata: { bucketName: TRANSFER_BUCKET, objectName, contentType, cacheControl: '3600' },
       onError: reject,
       onProgress: (uploaded, total) => {
         const percentage = total ? Math.round((uploaded / total) * 100) : 0;
@@ -982,7 +1013,7 @@ function uploadOriginalTransferFile(file, accessToken) {
         document.querySelector('#transferUploadPercent').textContent = `${percentage}%`;
         document.querySelector('#transferProgressBar').style.width = `${percentage}%`;
       },
-      onSuccess: resolve
+      onSuccess: () => resolve(objectName)
     });
     upload.findPreviousUploads().then((previousUploads) => {
       if (previousUploads.length) upload.resumeFromPreviousUpload(previousUploads[0]);
@@ -992,8 +1023,8 @@ function uploadOriginalTransferFile(file, accessToken) {
 }
 
 async function uploadTransferFiles(files) {
-  const acceptedFiles = [...files].filter((file) => file.type.startsWith('image/') || file.type.startsWith('video/'));
-  if (!acceptedFiles.length || !currentUser) return;
+  const acceptedFiles = [...files].filter(isTransferMediaFile);
+  if (!acceptedFiles.length || !currentUser) return showSiteToast('Selecione uma imagem ou um vídeo compatível.');
   const { data: { session } } = await supabaseClient.auth.getSession();
   if (!session?.access_token) return showSiteToast('Sua sessão expirou. Entre novamente para enviar arquivos.');
   transferUploadStatus.hidden = false;
@@ -1020,6 +1051,26 @@ async function downloadTransferFile(path, originalName) {
   document.body.appendChild(link);
   link.click();
   link.remove();
+}
+
+async function shareTransferFile(path, originalName, mimeType) {
+  if (!navigator.share || typeof File === 'undefined') {
+    showSiteToast('O compartilhamento não está disponível neste navegador. Iniciando o download.');
+    return downloadTransferFile(path, originalName);
+  }
+  showSiteToast('Preparando o arquivo original...');
+  const { data, error } = await supabaseClient.storage.from(TRANSFER_BUCKET).download(path);
+  if (error || !data) return showSiteToast('Não foi possível preparar o arquivo.');
+  const file = new File([data], originalName, { type: mimeType || data.type || 'application/octet-stream', lastModified: Date.now() });
+  if (navigator.canShare && !navigator.canShare({ files: [file] })) {
+    showSiteToast('Este celular não permite compartilhar esse formato. Iniciando o download.');
+    return downloadTransferFile(path, originalName);
+  }
+  try {
+    await navigator.share({ files: [file], title: originalName });
+  } catch (error) {
+    if (error.name !== 'AbortError') showSiteToast('Não foi possível abrir as opções de compartilhamento.');
+  }
 }
 
 function openDeleteTransferModal(path, name) {
